@@ -18,9 +18,11 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
 
 	apiv1 "github.com/google/cloud-android-orchestration/api/v1"
@@ -33,6 +35,11 @@ type DockerIMConfig struct {
 	DockerImageName      string
 	HostOrchestratorPort int
 }
+
+const (
+	dockerLabelPrefix    = "docker-"
+	dockerLabelCreatedBy = dockerLabelPrefix + "created_by"
+)
 
 // Docker implementation of the instance manager.
 type DockerInstanceManager struct {
@@ -55,7 +62,7 @@ func (m *DockerInstanceManager) ListZones() (*apiv1.ListZonesResponse, error) {
 	}, nil
 }
 
-func (m *DockerInstanceManager) CreateHost(zone string, _ *apiv1.CreateHostRequest, _ accounts.User) (*apiv1.Operation, error) {
+func (m *DockerInstanceManager) CreateHost(zone string, _ *apiv1.CreateHostRequest, user accounts.User) (*apiv1.Operation, error) {
 	if zone != "local" {
 		return nil, fmt.Errorf("Invalid zone. It should be 'local'.")
 	}
@@ -64,6 +71,9 @@ func (m *DockerInstanceManager) CreateHost(zone string, _ *apiv1.CreateHostReque
 		AttachStdin: true,
 		Image:       m.Config.Docker.DockerImageName,
 		Tty:         true,
+		Labels:      map[string]string{
+			dockerLabelCreatedBy: user.Username(),
+		},
 	}
 	hostConfig := &container.HostConfig{
 		Privileged:      true,
@@ -83,12 +93,22 @@ func (m *DockerInstanceManager) CreateHost(zone string, _ *apiv1.CreateHostReque
 	}, nil
 }
 
-func (m *DockerInstanceManager) ListHosts(zone string, _ accounts.User, _ *ListHostsRequest) (*apiv1.ListHostsResponse, error) {
+func (m *DockerInstanceManager) ListHosts(zone string, user accounts.User, _ *ListHostsRequest) (*apiv1.ListHostsResponse, error) {
 	if zone != "local" {
 		return nil, fmt.Errorf("Invalid zone. It should be 'local'.")
 	}
 	ctx := context.TODO()
-	listRes, err := m.Client.ContainerList(ctx, types.ContainerListOptions{})
+	ownerFilterExpr := fmt.Sprintf("%s=%s", dockerLabelCreatedBy, user.Username())
+	listFilters := filters.NewArgs(
+		filters.KeyValuePair{
+			Key: "label",
+			Value: ownerFilterExpr,
+
+		},
+	)
+	listRes, err := m.Client.ContainerList(ctx, types.ContainerListOptions{
+		Filters: listFilters,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("Failed to list docker containers: %w", err)
 	}
@@ -96,6 +116,11 @@ func (m *DockerInstanceManager) ListHosts(zone string, _ accounts.User, _ *ListH
 	for _, container := range listRes {
 		items = append(items, &apiv1.HostInstance{
 			Name: container.ID,
+			Docker: &apiv1.DockerInstance{
+				ImageName: container.Image,
+				CreatedBy: user.Username(),
+				CreatedAt: time.Unix(container.Created, 0).Format(time.UnixDate),
+			},
 		})
 	}
 	return &apiv1.ListHostsResponse{
@@ -103,11 +128,15 @@ func (m *DockerInstanceManager) ListHosts(zone string, _ accounts.User, _ *ListH
 	}, nil
 }
 
-func (m *DockerInstanceManager) DeleteHost(zone string, _ accounts.User, host string) (*apiv1.Operation, error) {
+func (m *DockerInstanceManager) DeleteHost(zone string, user accounts.User, host string) (*apiv1.Operation, error) {
 	if zone != "local" {
 		return nil, fmt.Errorf("Invalid zone. It should be 'local'.")
 	}
 	ctx := context.TODO()
+	owner, _ := m.getContainerLabel(host, dockerLabelCreatedBy)
+	if owner != user.Username() {
+		return nil, fmt.Errorf("User %s cannot delete docker host owned by %s", user.Username(), owner)
+	}
 	err := m.Client.ContainerStop(ctx, host, container.StopOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("Failed to stop docker container: %w", err)
@@ -184,4 +213,17 @@ func (m *DockerInstanceManager) GetHostClient(zone string, host string) (HostCli
 		return nil, err
 	}
 	return NewNetHostClient(url, m.Config.AllowSelfSignedHostSSLCertificate), nil
+}
+
+func (m *DockerInstanceManager) getContainerLabel(host string, key string) (string, error) {
+	ctx := context.TODO()
+	inspect, err := m.Client.ContainerInspect(ctx, host)
+	if err != nil {
+		return "", fmt.Errorf("Failed to inspect container: %w", err)
+	}
+	value, exist := inspect.Config.Labels[key]
+	if !exist {
+		return "", fmt.Errorf("Failed to find docker label: %s", key)
+	}
+	return value, nil
 }

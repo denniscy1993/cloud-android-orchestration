@@ -18,6 +18,7 @@ import (
 	"errors"
 	"net/http"
 
+	apperr "github.com/google/cloud-android-orchestration/pkg/app/errors"
 	appOAuth2 "github.com/google/cloud-android-orchestration/pkg/app/oauth2"
 )
 
@@ -66,7 +67,7 @@ func userFromRequest(r *http.Request) (*BasicUser, error) {
 	// TODO: verify the password
 	username, _, ok := r.BasicAuth()
 	if !ok {
-		return nil, errors.New("cannot get username from the http request")
+		return nil, apperr.NewBadRequestError("No username in request", nil)
 	}
 	return &BasicUser{username}, nil
 }

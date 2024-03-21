@@ -16,6 +16,8 @@ type HostInstance struct {
 	BootDiskSizeGB int64 `json:"boot_disk_size_gb,omitempty"`
 	// GCP specific properties.
 	GCP *GCPInstance `json:"gcp,omitempty"`
+	// Docker specific properties.
+	Docker *DockerInstance `json:"docker,omitempty"`
 }
 
 type GCPInstance struct {
@@ -24,6 +26,15 @@ type GCPInstance struct {
 	MachineType string `json:"machine_type"`
 	// Specifies a minimum CPU platform for the VM instance.
 	MinCPUPlatform string `json:"min_cpu_platform"`
+}
+
+type DockerInstance struct {
+	// Specifies the docker image name.
+	ImageName string `json:"image_name"`
+	// Specifies the owner who created this docker instance.
+	CreatedBy string `json:"created_by"`
+	// Specifies the creation timestamp in the date time format.
+	CreatedAt string `json:"created_at"`
 }
 
 type Operation struct {
